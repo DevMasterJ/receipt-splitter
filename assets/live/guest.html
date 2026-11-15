@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bill</title>
+<style>
+  :root { --bg:#fbf8ff; --card:#fff; --fg:#1d1b20; --muted:#6b6672; --accent:#6750a4; --accent-bg:#e9ddff; --warn:#b3261e; --line:#e6e0ec; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141218; --card:#1d1b20; --fg:#e6e0e9; --muted:#a59fad; --accent:#d0bcff; --accent-bg:#4f378b; --warn:#f2b8b5; --line:#36343b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:480px; margin:0 auto; padding:16px 16px 40px; }
+  h1 { font-size:20px; margin:4px 0 16px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:24px 0 8px; }
+  .status { font-size:13px; color:var(--muted); margin-bottom:12px; }
+  .status.off { color:var(--warn); }
+  .names { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  button { font:inherit; border:0; border-radius:12px; padding:14px 12px; background:var(--accent-bg); color:var(--fg); cursor:pointer; }
+  button:disabled { opacity:.4; }
+  button.link { background:none; color:var(--accent); padding:4px 0; }
+  .me { background:var(--accent-bg); border-radius:16px; padding:16px; }
+  .me .who { font-size:15px; }
+  .me .amount { font-size:40px; font-weight:700; margin-top:2px; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .row .p { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .card { background:var(--card); border-radius:16px; padding:4px 16px; }
+  .muted { color:var(--muted); }
+  .warn { color:var(--warn); }
+  .bold { font-weight:700; }
+  .openapp[hidden] { display:none; }
+  .openapp { display:block; text-align:center; text-decoration:none; color:var(--accent); border:1px solid var(--line); border-radius:12px; padding:10px; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🧾 Bill at the table</h1>
+  <div id="status" class="status">Connecting…</div>
+  <a id="openapp" class="openapp" hidden>📱 Have the Receipt Splitter app? Open this bill in the app</a>
+  <div id="app"></div>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+const key = params.get('k');
+let device = localStorage.getItem('rs-device');
+if (!device || device.length < 8) {
+  device = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => (b % 36).toString(36)).join('');
+  localStorage.setItem('rs-device', device);
+}
+let state = null, ws = null, retry = 0, ended = false;
+const eur = v => v.toFixed(2).replace('.', ',') + ' €';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(key)}&d=${device}`);
+  ws.onopen = () => { retry = 0; setStatus('Live — updates as items are added', false); };
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'state') { state = m; render(); } };
+  ws.onclose = e => {
+    if (e.code === 1001) { ended = true; setStatus('The host ended the session. These were the last numbers.', true); return; }
+    setStatus('Connection lost — reconnecting…', true);
+    setTimeout(retryOrStop, Math.min(1000 * 2 ** retry++, 8000));
+  };
+}
+// The browser doesn't say why the WebSocket failed: ask the page. 403 = the host started a new session.
+function retryOrStop() {
+  fetch(`/?k=${encodeURIComponent(key)}&web=1`, {cache: 'no-store'})
+    .then(r => {
+      if (r.status === 403) { ended = true; setStatus("This bill isn't open any more. Scan the new QR code on the host phone.", true); }
+      else connect();
+    })
+    .catch(() => connect());
+}
+function setStatus(t, off) { const s = document.getElementById('status'); s.textContent = t; s.className = 'status' + (off ? ' off' : ''); }
+function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
+function claim(id) { send({type: 'claim', personId: id}); }
+function unclaim() { send({type: 'unclaim'}); }
+
+function render() {
+  const app = document.getElementById('app');
+  const me = state.persons.find(p => p.claimedBy === device);
+  if (!me) {
+    app.innerHTML = `<h2>Who are you?</h2><div class="names">` +
+      state.persons.map(p => `<button ${p.claimedBy && !ended ? 'disabled' : ''} onclick="claim(${p.id})">${esc(p.name)}${p.claimedBy === 'host' ? ' (host)' : p.claimedBy ? ' ✓' : ''}</button>`).join('') +
+      `</div>` + (state.persons.some(p => p.claimedBy && p.claimedBy !== 'host') ? `<p class="muted">✓ = already picked on another phone. Wrong one? Ask the host to free it.</p>` : '') +
+      everyone();
+    return;
+  }
+  const mine = state.items.filter(i => i.personId === me.id);
+  const open = state.items.filter(i => i.personId === null);
+  app.innerHTML =
+    `<div class="me"><div class="who">${esc(me.name)}, you owe</div><div class="amount">${eur(me.total)}</div>
+       <button class="link" onclick="unclaim()">Not ${esc(me.name)}? Switch</button></div>` +
+    `<h2>Your items (${mine.length})</h2><div class="card">` +
+      (mine.length ? mine.map(i => `<div class="row"><span>${esc(i.name)}</span><span class="p">${eur(i.price)}</span></div>`).join('')
+                   : `<div class="row muted">Nothing assigned to you yet.</div>`) + `</div>` +
+    (open.length ? `<h2 class="warn">Not assigned yet (${open.length})</h2><div class="card">` +
+      open.map(i => `<div class="row"><span>${esc(i.name)}</span><span class="p">${eur(i.price)}</span></div>`).join('') +
+      `</div><p class="muted">Is one of these yours? Tell the host.</p>` : '') +
+    everyone();
+}
+function everyone() {
+  return `<h2>Everyone</h2><div class="card">` +
+    state.persons.map(p => `<div class="row"><span>${esc(p.name)}</span><span class="p">${eur(p.total)}</span></div>`).join('') +
+    (Math.abs(state.unassigned) >= 0.005 ? `<div class="row warn"><span>Not assigned</span><span class="p">${eur(state.unassigned)}</span></div>` : '') +
+    `<div class="row bold"><span>Total</span><span class="p">${eur(state.total)}</span></div></div>`;
+}
+// Android: offer the app. If it isn't installed, the browser just reloads this page (fallback URL).
+if (/Android/i.test(navigator.userAgent) && key) {
+  const a = document.getElementById('openapp');
+  a.href = `intent://${location.host}/?k=${encodeURIComponent(key)}#Intent;scheme=receiptsplitter;` +
+           `package=dev.webmasterj.receiptsplitter;S.browser_fallback_url=${encodeURIComponent(location.href)};end`;
+  a.hidden = false;
+}
+if (!key) setStatus('Link is missing its key — scan the QR code again.', true); else connect();
+</script>
+</body>
+</html>
