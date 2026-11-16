@@ -40,7 +40,8 @@ dependencies:
   path: ^1.9.1
   ffi: ^2.2.0
   image: ^4.12.0
-  onnxruntime: ^1.4.1
+  onnxruntime:
+    path: third_party/onnxruntime
   qr_flutter: ^4.1.0
   wakelock_plus: ^1.8.2
   app_links: ^7.2.2

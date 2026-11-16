@@ -204,7 +204,7 @@ final _skip = _rx(
 );
 final _discountLine = _rx(r'\b(popust|multipluscard)\b');
 final _deposit = _rx(r'(pov[\p{L}\p{N}_]*\.?\s*naknad|povratn[\p{L}\p{N}_]*\s*naknad)');
-final _unitJunk = _rx(r'^(?:\s|x|×|\*|kom|ko|kg|j\.?m\.?|kn|eur|€|=|:|-)*$');
+final _unitJunk = _rx(r'^(?:\d+\s*)?(?:\s|x|×|\*|kom|ko|kg|j\.?m\.?|kn|eur|€|=|:|-)*$');
 final _taxHead = _rx(r'\b(pdv|osnovica|porez|stopa)\b');
 final _hasWord = _rxCase('$_letter{2}');
 final _letterRx = _rxCase(_letter);
@@ -261,17 +261,22 @@ double _round(double x, int digits) {
       return (q, u, p, i); // the pair closest to the price column
     }
   }
-  final prev = nums[pi - 1];
+  // a zero discount column right before the price ("100  1,90  0,00  1,90", qty's dot lost) is not the unit price
+  var k = pi - 1;
+  while (k > 0 && nums[k].v == 0 && nums[k].dec == 2) {
+    k--;
+  }
+  final prev = nums[k];
   final a = prev.v;
-  if ((a - p).abs() < 0.005 && prev.dec == 2) return (1.0, p, p, pi - 1); // "12,00  12,00"
+  if ((a - p).abs() < 0.005 && prev.dec == 2) return (1.0, p, p, k); // "12,00  12,00"
   if (prev.dec == 2 && a >= 1 && a <= 20 && a == a.roundToDouble() && (_round(p / a, 2) * a - p).abs() <= _tot) {
-    return (a, _round(p / a, 2), p, pi - 1); // "1,00  3,00"
+    return (a, _round(p / a, 2), p, k); // "1,00  3,00"
   }
   if (prev.dec == 2 && a > 0) {
     final r = _pyRound(p / a);
-    if (r >= 2 && r <= 50 && (r * a - p).abs() <= _tot) return (r.toDouble(), a, p, pi - 1); // qty dropped
+    if (r >= 2 && r <= 50 && (r * a - p).abs() <= _tot) return (r.toDouble(), a, p, k); // qty dropped
   }
-  if ((a - p).abs() <= _tot && prev.dec == 2) return (1.0, p, p, pi - 1);
+  if ((a - p).abs() <= _tot && prev.dec == 2) return (1.0, p, p, k);
   return null;
 }
 
