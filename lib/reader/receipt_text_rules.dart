@@ -206,6 +206,8 @@ final _discountLine = _rx(r'\b(popust|multipluscard)\b');
 final _deposit = _rx(r'(pov[\p{L}\p{N}_]*\.?\s*naknad|povratn[\p{L}\p{N}_]*\s*naknad)');
 final _unitJunk = _rx(r'^(?:\d+\s*)?(?:\s|x|×|\*|kom|ko|kg|j\.?m\.?|kn|eur|€|=|:|-)*$');
 final _taxHead = _rx(r'\b(pdv|osnovica|porez|stopa)\b');
+// a VAT row: "25,00%  15,04  3,76  0,00" (rate, base, VAT, PNP)
+final _vatRow = _rx(r'^\W*\d{1,2}[,.]\d{2}\s*%');
 final _hasWord = _rxCase('$_letter{2}');
 final _letterRx = _rxCase(_letter);
 
@@ -336,11 +338,13 @@ TextReceipt parseReceiptText(String text) {
       break;
     }
   }
+  var payFound = false;
   if (firstTotal == null) {
     for (var i = start; i < lines.length; i++) {
       final both = '${lines[i]} ${i + 1 < lines.length ? lines[i + 1] : ''}';
       if (_pay.hasMatch(lines[i]) && _numbers(both).isNotEmpty) {
         end = i;
+        payFound = true;
         break;
       }
     }
@@ -407,7 +411,17 @@ TextReceipt parseReceiptText(String text) {
           for (final n in _numbers(ln))
             if (n.dec == 2) n.v,
     ];
-    total = s > 0 && after.any((a) => (a - s).abs() <= _tot) ? s : (after.isNotEmpty ? after.first : null);
+    // base + VAT + PNP from the VAT rows = the total (when the paid amount is unreadable, "1E,80")
+    double? vatTotal;
+    for (final ln in lines.sublist(math.min(end, lines.length), math.min(end + 8, lines.length))) {
+      if (!_vatRow.hasMatch(ln)) continue;
+      final ns = [for (final n in _numbers(ln).skip(1)) if (n.dec == 2) n.v];
+      if (ns.length >= 2) vatTotal = _round((vatTotal ?? 0) + ns.fold(0.0, (a, v) => a + v), 2);
+    }
+    final cands = [...after, ?vatTotal];
+    total = s > 0 && cands.any((a) => (a - s).abs() <= _tot)
+        ? s
+        : (vatTotal != null && !payFound ? vatTotal : (after.isNotEmpty ? after.first : null));
   }
 
   // bottle deposit added on top (Konzum, after the tax table), only when it makes the sum match
